@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """Download and parse live DASH MPD and time download corresponding media segments.
 
 Downloads all representations in the manifest. Only works for manifest with $Number$-template.
@@ -38,8 +38,7 @@ import sys
 import time
 from threading import Thread, Lock
 import signal
-import urllib2
-import urlparse
+import urllib
 
 import mpdparser
 
@@ -52,7 +51,7 @@ class FileWriter(object):
     def __init__(self, base_dst, verbose=False):
         self.base_dst = base_dst
         self.verbose = verbose
-        self.base_parts = urlparse.urlparse(base_dst)
+        self.base_parts = urllib.parse.urlparse(base_dst)
         self.lock = Lock()
 
     def write_file(self, rel_path, data):
@@ -68,12 +67,12 @@ class FileWriter(object):
         if self.base_dst == "":
             return
         path = os.path.join(self.base_dst, rel_path)
-        print "Writing file %s" % path
+        print("Writing file %s" % path)
         if CREATE_DIRS:
             dir_path, _ = os.path.split(path)
             if dir_path != "" and not os.path.exists(dir_path):
                 if self.verbose:
-                    print "os.makedirs: %s" % dir_path
+                    print("os.makedirs: %s" % dir_path)
                 os.makedirs(dir_path)
         with open(path, "wb") as ofh:
             ofh.write(data)
@@ -83,14 +82,16 @@ def fetch_file(url):
     "Fetch a specific file via http and return as string."
     try:
         start_time = time.time()
-        data = urllib2.urlopen(url).read()
+        data = urllib.request.urlopen(url).read()
         size = len(data)
         end_time = time.time()
         start_time_tuple = time.gmtime(start_time)
         start_string = time.strftime("%Y-%m-%d-%H:%M:%S", start_time_tuple)
-        print "%s  %.3fs for %8dB %s" % (start_string, end_time - start_time, size, url)
-    except urllib2.HTTPError, exc:
-        print "ERROR %s for %s" % (exc, url)
+        print("%s  %.3fs for %8dB %s" % (start_string, end_time - start_time, size, url))
+    except urllib.error.HTTPError:
+        import sys
+        exc = sys.exc_info()[1]
+        print("ERROR %s for %s" % (exc, url))
         data = exc.read()
     return data
 
@@ -109,7 +110,7 @@ class Fetcher(object):
         self.prepare()
         signal.signal(signal.SIGINT, self.signal_handler)
         if mpd.type != "dynamic":
-            print "Can only handle dynamic MPDs (live content)"
+            print("Can only handle dynamic MPDs (live content)")
             sys.exit(1)
 
     def prepare(self):
@@ -120,7 +121,7 @@ class Fetcher(object):
         print("Period Start %s" % period_start)
         for adaptation_set in self.mpd.periods[0].adaptation_sets:
             if self.verbose:
-                print adaptation_set
+                print(adaptation_set)
             for rep in adaptation_set.representations:
                 init = adaptation_set.initialization.replace("$RepresentationID$", rep.id)
                 media = adaptation_set.media.replace("$RepresentationID$", rep.id)
@@ -143,7 +144,7 @@ class Fetcher(object):
 
     def stop(self):
         "Stop this thread."
-        print "Stopping..."
+        print("Stopping...")
         for thread in self.threads:
             thread.interrupt()
             self.interrupted = True
@@ -241,7 +242,7 @@ def download(mpd_url=None, mpd_str=None, base_url=None, base_dst="", number_segm
     mpd_parser = mpdparser.ManifestParser(mpd_str)
     fetcher = Fetcher(mpd_parser.mpd, base_url, file_writer, verbose)
     if verbose:
-        print fetcher.fetches
+        print(fetcher.fetches)
     fetcher.start_fetch(number_segments)
 
 
