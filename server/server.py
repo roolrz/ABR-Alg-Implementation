@@ -3,21 +3,21 @@
 import os
 import sys
 import socket
-import threading
 import json
 import signal
 
 bitrate_table = {
-        '240p' : 640000,
+        '240p' : 400000,
         '360p' : 960000,
         '432p' : 1150000,
-        '480p' : 1280000,
+        '480p' : 2560000,
         '576p' : 1920000,
         '720p' : 2560000,
-        '1080p': 5120000,
+        '900p' : 5120000,
+        '1080p': 10240000,
+        '1440p': 20480000,
+        '2160p': 40960000,
 }
-
-networkLock = threading.Lock()
 
 class socketError(Exception):
         pass
@@ -72,24 +72,21 @@ class packageResolver:
                 
 class speedLimiter:
         def __init__(self, config):
-                if config == '3G':
-                        self.filedir = '../sabre/example/tomm19/3Glogs'
-                elif config == '4G':
-                        self.filedir = '../sabre/example/tomm19/4Glogs'
-                else:
-                        raise configError
-                self.files = os.listdir(self.filedir)
-                self.records = []
-                for filepath in self.files:
-                        f = open(self.filedir + '/' + filepath)
-                        self.records = self.records + json.load(f)
-                        f.close()
+                self.filedir = '../sabre/example/tomm19/' + config
+                f = open(self.filedir)
+                self.records = json.load(f)
+                f.close()
                 self.recordMax = len(self.records)
                 self.recordIdx = 0
                 self.startFlag = False
+                self.currentLatency = 0
+                print('Using "'+self.filedir+'"')
         
         def printRecords(self):
                 print(self.records)
+
+        def getCurrentLatency(self):
+                return self.currentLatency
 
         def __timerhandler(self, signum, frame):
                 if self.startFlag == False:
@@ -98,22 +95,28 @@ class speedLimiter:
                 if self.recordIdx == self.recordMax:
                         self.recordIdx = 0
                 signal.setitimer(signal.ITIMER_REAL, self.records[self.recordIdx]['duration_ms']/1000)
-                with networkLock:
-                        os.system("sudo tc qdisc del dev eth0 root")
-                        os.system("sudo tc qdisc add dev eth0 root tbf rate " + str(self.records[self.recordIdx]['bandwidth_kbps']) + "kbit burst 4kb latency " + str(self.records[self.recordIdx]['latency_ms']) +"ms")
+                if self.records[self.recordIdx]['bandwidth_kbps'] == 0:
+                        self.records[self.recordIdx]['bandwidth_kbps'] = 1
+                os.system("sudo tc qdisc change dev eth0 root tbf rate " + str(self.records[self.recordIdx]['bandwidth_kbps']) + "kbit burst 4kb latency " + str(self.records[self.recordIdx]['latency_ms']) +"ms")
                 print('Limited network at %d kbps and %d ms latency for %d ms'%(self.records[self.recordIdx]['bandwidth_kbps'], self.records[self.recordIdx]['latency_ms'], self.records[self.recordIdx]['duration_ms']))
 
         def start(self):
+                if self.startFlag:
+                        return
                 signal.signal(signal.SIGALRM, self.__timerhandler)
                 signal.setitimer(signal.ITIMER_REAL, self.records[self.recordIdx]['duration_ms']/1000)
-                with networkLock:
-                        os.system("sudo tc qdisc add dev eth0 root tbf rate " + str(self.records[self.recordIdx]['bandwidth_kbps']) + "kbit burst 4kb latency " + str(self.records[self.recordIdx]['latency_ms']) +"ms")
+                os.system("sudo tc qdisc del dev eth0 root")
+                if self.records[self.recordIdx]['bandwidth_kbps'] == 0:
+                        self.records[self.recordIdx]['bandwidth_kbps'] = 1
+                os.system("sudo tc qdisc add dev eth0 root tbf rate " + str(self.records[self.recordIdx]['bandwidth_kbps']) + "kbit burst 4kb latency " + str(self.records[self.recordIdx]['latency_ms']) +"ms")
                 self.startFlag = True
+                self.currentLatency = self.records[self.recordIdx]['latency_ms']
                 print('Limited network at %d kbps and %d ms latency for %d ms'%(self.records[self.recordIdx]['bandwidth_kbps'], self.records[self.recordIdx]['latency_ms'], self.records[self.recordIdx]['duration_ms']))
 
         def stop(self):
-                with networkLock:
-                        os.system("sudo tc qdisc del dev eth0 root")
+                if not self.startFlag:
+                        return
+                os.system("sudo tc qdisc del dev eth0 root")
                 self.startFlag = False
 
 class connection:
@@ -134,61 +137,75 @@ class connection:
                 return self.socket.connect()
 
 
-class clientThread(threading.Thread):
-        def __init__(self, clientaddr, clientsocket, pkgResolver):
-                threading.Thread.__init__(self)
+class client:
+        def __init__(self, clientaddr, clientsocket, pkgResolver, spdLimiter):
                 self.csocket = clientsocket
                 self.caddr = clientaddr
                 self.pkgResolver = pkgResolver
+                self.spdLimiterClass = spdLimiter
+                self.speedtested = False
+                self.speedLimit = False
         
         def run(self):
                 while True:
-                        conf = self.csocket.recv(1024)
+                        conf = self.csocket.recv(4096)
                         if not conf: 
                                 continue
-                        if conf == b'head':
+                        if b'speedteststart' == conf and not self.speedtested:
+                                self.speedtested = True
+                                teststr = b'\x7c'*4096
+                                print('Testlen %d'%(len(teststr)*256/1024) + 'KB')
+                                for idx in range(256):
+                                        _ = idx # ignore compiler warnings
+                                        self.csocket.send(teststr)
+                                self.csocket.send(b'end')
+                        elif b'limitstart' in conf:
+                                self.spdLimiter = self.spdLimiterClass(conf.decode(encoding='utf-8').split(',')[1])
+                                self.speedLimit = True
+                                self.spdLimiter.start()
+                        elif conf == b'limitstop':
+                                self.spdLimiter.stop()
+                        elif conf == b'head':
                                 stat = self.pkgResolver.getStat()
                                 self.csocket.send(bytes(json.dumps(stat), 'utf-8'))
                         elif conf == b'end':
-                                print('connection closed')
+                                self.spdLimiter.stop()
                                 self.csocket.close()
-                                exit()
+                                print('connection from %s:%s closed'%(self.caddr[0], self.caddr[1]))
+                                break
                         else:
                                 conf = conf.decode(encoding="utf-8").split(',')
                                 if conf[0] not in bitrate_table:
-                                        print('bitrate setting err')
+                                        print('%s bitrate setting err'%conf[0])
                                         continue
                                 fp = self.pkgResolver.getFp(conf[0], int(conf[1]))
                                 if fp == None:
-                                        print('file err')
+                                        print('file %d err'%int(conf[1]))
                                         continue
                                 print('starting transfer file ' + str(conf[1]))
-                                l = fp.read(1024)
+                                if self.speedLimit:
+                                        l = str(self.spdLimiter.getCurrentLatency()).encode(encoding="utf-8") + fp.read(4090)
+                                else:
+                                        l = fp.read(4096)
                                 while (l):
-                                        with networkLock:
-                                                self.csocket.send(l)
-                                                l = fp.read(1024)
+                                        self.csocket.send(l)
+                                        l = fp.read(4096)
                                 fp.close()
-                                with networkLock:
-                                        self.csocket.send(b'f_end')
-                                        print('file transfer complete')
+                                self.csocket.send(b'f_end')
+                                print('file transfer complete')
 
 if __name__ == '__main__':
-        pkgResolver = packageResolver('./video')
-        spdLimiter = speedLimiter('3G')
-
         try:
                 conn = connection('0.0.0.0', 51234)
         except socketError:
                 print('Unable to open socket')
+                exit()
         
         print('Server online')
-        spdLimiter.start()
         while True:
                 c, addr = conn.accept()
                 print('Connected to :', addr[0], ':', addr[1]) 
-                newThread = clientThread(addr, c, packageResolver('./video'))
-                newThread.start()
+                client(addr, c, packageResolver('./video'), speedLimiter).run()
 
                 
 

@@ -7,13 +7,16 @@ import json
 import math
 
 bitrate_table = {
-        '240p' : 640000,
+        '240p' : 400000,
         '360p' : 960000,
         '432p' : 1150000,
-        '480p' : 1280000,
+        '480p' : 2560000,
         '576p' : 1920000,
         '720p' : 2560000,
-        '1080p': 5120000,
+        '900p' : 5120000,
+        '1080p': 10240000,
+        '1440p': 20480000,
+        '2160p': 40960000,
 }
 
 if __name__ == '__main__':
@@ -51,8 +54,7 @@ if __name__ == '__main__':
         for key in vid_table:
                 for idx in range(1, count+1):
                         fp = open(path+key+'_'+str(idx), 'wb')
-                        for i in range(vid_table[key]//8):
-                                fp.write(b'\x7c')
+                        fp.write(b'\x7c'*(vid_table[key]//8))
                         fp.close()
                         print('Created file ' + str(idx) + ' of ' + key)
 
