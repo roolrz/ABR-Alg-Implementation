@@ -395,7 +395,7 @@ class BolaWithFastSwitching(Bola):
 
 
 class player:
-        def __init__(self, socket, measure, path, alg, preEvaluateSpeed = False):
+        def __init__(self, socket, measure, path, alg, preEvaluateSpeed = False, fastSwitching = False):
                 self.socket = socket
                 self.measure = measure(1)
                 self.path = path + '/vid_'
@@ -403,6 +403,7 @@ class player:
                 self.InitialSpeed = 1
                 self.recClipBitrate = []
                 self.preEvaluateSpeed = preEvaluateSpeed # Pre-Evaluate the network status, True to enable
+                self.fastSwitching = fastSwitching
 
         def preprocess(self):
                 self.socket.send(b'head')
@@ -441,7 +442,7 @@ class player:
 
         def recordSelection(self, idx, bitrateS):
                 if len(self.recClipBitrate) >= idx:
-                        self.recClipBitrate[idx-1] = [bitrate_table[bitrateS], int(round(time.time()*1000))]
+                        self.recClipBitrate[idx-1] = [bitrate_table[bitrateS], self.recClipBitrate[idx-1][1]]
                 else:
                         self.recClipBitrate.append([bitrate_table[bitrateS], int(round(time.time()*1000))])
 
@@ -461,11 +462,36 @@ class player:
                         self.alg.setInitialSpeed(self.InitialSpeed)
                         self.measure.setInitialSpeed(self.InitialSpeed)
 
+                self.missionList = []
                 for idx in range(1, self.count+1):
+                        self.missionList.append(idx)
+                
+                while(len(self.missionList) != 0):
+                        if self.fastSwitching:
+                                q = self.alg.quality_from_throughput(self.measure.getSpeed())
+                                btr = self.alg.bitrateTable[q]
+                                if self.measure.getBufferUsage() > self.clip * 1.5 :
+                                        if len(self.measure.bufferList) >= 3:
+                                                if btr > self.measure.bufferList[2]['bitrate']:
+                                                        missionIdx = int(self.measure.bufferList[2]['index'])
+                                                        if missionIdx in self.missionList:
+                                                                pass
+                                                        else:
+                                                                self.missionList = [missionIdx] + self.missionList
+                                                else:
+                                                        pass
+                                        else:
+                                                pass
+                                else:
+                                        pass
+
+
                         while(self.alg.getIfBufferFull() == True):
                                 pass
                         bitrate = self.determineBitrate()
                         bitrateS = self.measure.convertBitrateToStr(bitrate)
+
+                        idx = self.missionList[0]
                         self.recordSelection(idx, bitrateS)
                         self.socket.send(bitrateS.encode(encoding="utf-8") + b',' + str(idx).encode(encoding="utf-8"))
                         print('bitrate setting for clip ' + str(idx) + ' is ' + bitrateS)
@@ -484,6 +510,7 @@ class player:
                                                 #f.write(filedata)
                                                 #f.close()
                                                 asyncio.run(self.measure.VidBufferAdd(self.clip, bitrate, idx))
+                                                self.missionList.remove(idx)
                                                 break
                                         elif d.strip(b'\x7c'):
                                                 self.measure.setLatency(d.strip(b'\x7c'))
@@ -504,26 +531,43 @@ class player:
                 f = open(self.filedir)
                 self.records = json.load(f)
                 f.close()
-                x2 = [self.recClipBitrate[idx][1]-self.tStart for idx in range(len(self.recClipBitrate))]
-                y2 = [self.recClipBitrate[idx][0]/1000 for idx in range(len(self.recClipBitrate))]
-                x1 = []
-                y1 = []
-                for idx in range(len(self.records)):
-                        if idx == 0:
-                                x1.append(self.records[idx]['duration_ms']/2)
-                                y1.append(self.records[idx]['bandwidth_kbps'])
-                        else:
-                                if (self.records[idx-1]['duration_ms'] + self.records[idx]['duration_ms'])/2 + x1[-1] > x2[-1]:
-                                        break
-                                x1.append((self.records[idx-1]['duration_ms'] + self.records[idx]['duration_ms'])/2 + x1[-1])
-                                y1.append(self.records[idx]['bandwidth_kbps'])
+                if self.fastSwitching:
+                        # when fast switching enabled, the time line becomes no longer meaningful, as same clip would load multiple times
+                        dataWithoutFs = [[400000, 1589890237540], [400000, 1589890237923], [400000, 1589890238149], [400000, 1589890238358], [400000, 1589890238489], [1150000, 1589890238620], [2560000, 1589890238993], [5120000, 1589890239752], [10240000, 1589890241442], [10240000, 1589890243618], [20480000, 1589890245698], [20480000, 1589890248439], [20480000, 1589890252339], [10240000, 1589890256063], [20480000, 1589890257331], [20480000, 1589890259789], [40960000, 1589890261771], [960000, 1589890275891], [2560000, 1589890276313], [5120000, 1589890277348]]
+                        x1 = []
+                        x2 = []
+                        for i in range(1, len(dataWithoutFs)+1):
+                                x1.append(i)
+                                x2.append(i)
+                        y1 = [self.recClipBitrate[idx][0]/1000 for idx in range(len(self.recClipBitrate))]
+                        y2 = [dataWithoutFs[idx][0]/1000 for idx in range(len(dataWithoutFs))]
+                        plt.plot(x1, y1, label='with fast switching')
+                        plt.plot(x2, y2, label='without fast switching')
+                        plt.legend(loc=2)
+                        plt.xlabel('clip index')
+                        plt.ylabel('kbps')
+                        plt.show()
+                else:
+                        x2 = [self.recClipBitrate[idx][1]-self.tStart for idx in range(len(self.recClipBitrate))]
+                        y2 = [self.recClipBitrate[idx][0]/1000 for idx in range(len(self.recClipBitrate))]
+                        x1 = []
+                        y1 = []
+                        for idx in range(len(self.records)):
+                                if idx == 0:
+                                        x1.append(self.records[idx]['duration_ms']/2)
+                                        y1.append(self.records[idx]['bandwidth_kbps'])
+                                else:
+                                        if (self.records[idx-1]['duration_ms'] + self.records[idx]['duration_ms'])/2 + x1[-1] > x2[-1]:
+                                                break
+                                        x1.append((self.records[idx-1]['duration_ms'] + self.records[idx]['duration_ms'])/2 + x1[-1])
+                                        y1.append(self.records[idx]['bandwidth_kbps'])
 
-                plt.plot(x1, y1, label='network bandwidth')
-                plt.plot(x2, y2, label='bitrate selection')
-                plt.legend(loc=2)
-                plt.xlabel('ms')
-                plt.ylabel('kbps')
-                plt.show()
+                        plt.plot(x1, y1, label='network bandwidth')
+                        plt.plot(x2, y2, label='bitrate selection')
+                        plt.legend(loc=2)
+                        plt.xlabel('ms')
+                        plt.ylabel('kbps')
+                        plt.show()
 
 
 if __name__ == '__main__':
@@ -540,7 +584,7 @@ if __name__ == '__main__':
         except FileExistsError:
                 pass
 
-        p = player(conn, speedMeasurement, path, Bola, preEvaluateSpeed = True)
+        p = player(conn, speedMeasurement, path, Bola, preEvaluateSpeed = False, fastSwitching = False)
         p.preprocess()
         p.start()
         p.drawGraphs()
